@@ -288,7 +288,9 @@ export default function InterviewPage() {
 
     if (isRecording) {
       try {
-        recognitionRef.current?.stop();
+        if (recognitionRef.current) {
+          recognitionRef.current.stop();
+        }
         setIsRecording(false);
         setError("");
         addToDetectionLog(`🛑 Recording stopped`);
@@ -302,14 +304,48 @@ export default function InterviewPage() {
       }
     } else {
       try {
-        recognitionRef.current?.start();
-        setIsRecording(true);
-        setError("");
-        addToDetectionLog(`🎤 Recording started for ${interviewContext.topic} interview (${interviewContext.experienceLevel} level)`);
-        
-        if (!sessionStartTime) {
-          setSessionStartTime(new Date());
-          setSessionId(generateSessionId());
+        // Ensure recognition is fully stopped before starting
+        if (recognitionRef.current) {
+          try {
+            recognitionRef.current.stop();
+          } catch (e) {
+            // Ignore if already stopped
+          }
+          
+          // Wait a bit for cleanup, then start
+          setTimeout(() => {
+            try {
+              recognitionRef.current?.start();
+              setIsRecording(true);
+              setError("");
+              addToDetectionLog(`🎤 Recording started for ${interviewContext.topic} interview (${interviewContext.experienceLevel} level)`);
+              
+              if (!sessionStartTime) {
+                setSessionStartTime(new Date());
+                setSessionId(generateSessionId());
+              }
+            } catch (err: any) {
+              console.error("Error starting recording:", err);
+              if (err.message && err.message.includes("already started")) {
+                // Recognition is still running, force stop and retry
+                recognitionRef.current?.stop();
+                setTimeout(() => {
+                  try {
+                    recognitionRef.current?.start();
+                    setIsRecording(true);
+                    setError("");
+                    addToDetectionLog(`🎤 Recording started (retry)`);
+                  } catch (retryErr) {
+                    setError("Failed to start recording. Please refresh the page and try again.");
+                    addToDetectionLog(`❌ Failed to start recording after retry`);
+                  }
+                }, 300);
+              } else {
+                setError("Failed to start recording. Please try again.");
+                addToDetectionLog(`❌ Failed to start recording`);
+              }
+            }
+          }, 200);
         }
       } catch (err) {
         console.error("Error starting recording:", err);
