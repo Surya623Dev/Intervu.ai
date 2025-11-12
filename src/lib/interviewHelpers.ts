@@ -1,3 +1,4 @@
+
 export interface InterviewSession {
   id: string;
   date: string;
@@ -44,19 +45,81 @@ export const generateSessionId = (): string => {
 export const detectQuestion = (text: string): boolean => {
   const lowerText = text.toLowerCase().trim();
   
+  // Remove common filler words that might interfere
+  const cleanText = lowerText
+    .replace(/\b(um|uh|like|you know|so|well)\b/g, "")
+    .trim();
+  
+  // Enhanced question patterns - more comprehensive detection
   const questionPatterns = [
+    // Ends with question mark
     /\?$/,
-    /^(what|when|where|who|why|how|can you|could you|would you|will you|do you|did you|have you|are you|is there)/i,
-    /^tell (me|us) about/i,
-    /^describe/i,
-    /^explain/i,
-    /^give (me|us) an example/i,
-    /^walk (me|us) through/i,
-    /^share/i,
-    /^discuss/i
+    
+    // Question words at start
+    /^(what|when|where|who|whom|whose|why|which|how)\b/i,
+    
+    // Auxiliary verbs at start (inverted questions)
+    /^(can|could|would|will|shall|should|may|might|must|do|does|did|have|has|had|is|are|was|were|am)\s+(you|we|they|i|he|she|it)\b/i,
+    
+    // Common interview question starters
+    /^(tell|describe|explain|discuss|share|walk|give|provide|outline|detail|elaborate)\s+(me|us|about|on|your|how|what|why)/i,
+    
+    // "Can you" / "Could you" variations
+    /^(can|could|would|will)\s+you\s+(tell|describe|explain|give|provide|share|walk)/i,
+    
+    // "Have you" questions
+    /^(have|has)\s+you\s+(ever|been|done|worked|used|experienced)/i,
+    
+    // "Do you" questions  
+    /^do\s+you\s+(have|know|think|believe|consider|feel)/i,
+    
+    // Behavioral interview patterns
+    /^(give|provide)\s+(me|us)\s+an\s+example/i,
+    /\b(situation|time|example|instance)\s+(when|where|that)\b/i,
+    
+    // Experience questions
+    /\b(experience|background|history)\s+(with|in|of)/i,
+    
+    // Opinion/thought questions
+    /\b(thoughts?|opinions?|views?|perspective)\s+on\b/i,
+    
+    // How would you / What would you
+    /^(how|what)\s+would\s+you/i,
+    
+    // Strength/weakness patterns
+    /\b(strength|weakness|challenge|skill|ability|talent)\b/i,
+    
+    // Why questions (company/role)
+    /^why\s+(do|did|are|were)\s+(you|we)/i,
+    /\bwhy\s+(this|our|the)\s+(company|role|position|job)/i,
   ];
   
-  return questionPatterns.some(pattern => pattern.test(lowerText));
+  // Check if any pattern matches
+  const hasQuestionPattern = questionPatterns.some(pattern => pattern.test(cleanText));
+  
+  // Additional heuristics
+  const hasQuestionMark = text.includes("?");
+  const wordCount = cleanText.split(/\s+/).length;
+  const isLongEnough = wordCount >= 3; // Questions are usually at least 3 words
+  const isTooLong = wordCount > 50; // Probably not a question if too long
+  
+  // Common question words presence
+  const questionWords = ["what", "when", "where", "who", "why", "how", "can", "could", "would", "will", "do", "does", "did", "have", "has", "had", "is", "are", "was", "were"];
+  const hasQuestionWord = questionWords.some(word => cleanText.includes(word));
+  
+  // Scoring system for better detection
+  let score = 0;
+  if (hasQuestionPattern) score += 3;
+  if (hasQuestionMark) score += 2;
+  if (hasQuestionWord) score += 1;
+  if (isLongEnough && !isTooLong) score += 1;
+  
+  // Debug logging (can be removed in production)
+  if (score >= 3) {
+    console.log("✅ Question detected:", text, "Score:", score);
+  }
+  
+  return score >= 3;
 };
 
 export const generateAISuggestion = (question: string): string => {
