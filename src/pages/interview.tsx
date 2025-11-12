@@ -38,13 +38,14 @@ export default function InterviewPage() {
   const [audioLevel, setAudioLevel] = useState(0);
   const [detectionLog, setDetectionLog] = useState<string[]>([]);
   
-  // Interview Context State
+  // Interview Context State - persist throughout entire interview
   const [interviewContext, setInterviewContext] = useState<InterviewContext>({
     topic: "",
     experienceLevel: "mid",
     role: "",
     additionalContext: ""
   });
+  const [contextSaved, setContextSaved] = useState(false);
   const [showContextForm, setShowContextForm] = useState(true);
   
   const recognitionRef = useRef<any>(null);
@@ -57,9 +58,11 @@ export default function InterviewPage() {
   // Load saved context on mount
   useEffect(() => {
     const savedContext = getInterviewContext();
-    if (savedContext) {
+    if (savedContext && savedContext.topic) {
       setInterviewContext(savedContext);
+      setContextSaved(true);
       setShowContextForm(false);
+      addToDetectionLog(`📋 Loaded saved context: ${savedContext.topic} (${savedContext.experienceLevel})`);
     }
   }, []);
 
@@ -75,6 +78,11 @@ export default function InterviewPage() {
     setAudioLevel(normalizedLevel);
 
     animationFrameRef.current = requestAnimationFrame(monitorAudioLevel);
+  };
+
+  const addToDetectionLog = (message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setDetectionLog(prev => [`[${timestamp}] ${message}`, ...prev].slice(0, 20));
   };
 
   useEffect(() => {
@@ -112,13 +120,17 @@ export default function InterviewPage() {
               const question = newText;
               addToDetectionLog(`✅ QUESTION DETECTED: "${question}"`);
               
+              // Check if we've already processed this question
               if (!processedQuestionsRef.current.has(question)) {
                 processedQuestionsRef.current.add(question);
                 setCurrentQuestion(question);
+                
+                // Generate suggestion
                 const newSuggestion = generateAISuggestion(question);
                 
-                addToDetectionLog(`🤖 Generating AI answer with context: ${interviewContext.topic}`);
-                handleGenerateAIAnswer(question, newSuggestion);
+                // IMMEDIATELY generate AI answer automatically
+                addToDetectionLog(`🤖 Auto-generating AI answer...`);
+                handleGenerateAIAnswer(question, newSuggestion, true);
               } else {
                 addToDetectionLog(`⚠️ Question already processed, skipping`);
               }
@@ -175,7 +187,7 @@ export default function InterviewPage() {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, []);
+  }, [isRecording]);
 
   useEffect(() => {
     if (isRecording && recognitionRef.current) {
@@ -193,24 +205,20 @@ export default function InterviewPage() {
     }
   }, [isRecording]);
 
-  const addToDetectionLog = (message: string) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setDetectionLog(prev => [`[${timestamp}] ${message}`, ...prev].slice(0, 20));
-  };
+  const handleGenerateAIAnswer = async (question: string, suggestion: string, isAutomatic: boolean = false) => {
+    // Only check context if this is a manual regeneration
+    // For automatic generation, we already validated context before starting recording
+    if (!isAutomatic && (!contextSaved || !interviewContext.topic)) {
+      setError("Please set and save interview context first.");
+      addToDetectionLog(`❌ Context not saved - cannot regenerate answer`);
+      return;
+    }
 
-  const handleGenerateAIAnswer = async (question: string, suggestion: string) => {
     const provider = getConfiguredProvider();
     
     if (!provider) {
       setError("AI provider not configured. Please go to Settings to add your API key.");
       addToDetectionLog(`❌ AI provider not configured`);
-      return;
-    }
-
-    if (!interviewContext.topic) {
-      setError("Please set interview context (topic & experience level) before generating answers.");
-      addToDetectionLog(`❌ Interview context not set`);
-      setShowContextForm(true);
       return;
     }
 
@@ -231,7 +239,7 @@ export default function InterviewPage() {
         };
         
         setQuestionAnswers(prev => [...prev, newQA]);
-        addToDetectionLog(`✅ Context-aware answer generated`);
+        addToDetectionLog(`✅ Context-aware answer generated successfully`);
       } else {
         const errorMsg = result.error || "Failed to generate AI answer";
         setError(errorMsg);
@@ -253,10 +261,12 @@ export default function InterviewPage() {
       return;
     }
     
+    // Save context to localStorage for entire session
     saveInterviewContext(interviewContext);
+    setContextSaved(true);
     setShowContextForm(false);
     setError("");
-    addToDetectionLog(`📋 Context saved: ${interviewContext.topic} (${interviewContext.experienceLevel})`);
+    addToDetectionLog(`📋 Context saved for entire interview: ${interviewContext.topic} (${interviewContext.experienceLevel})`);
   };
 
   const loadPreset = (preset: InterviewContext) => {
@@ -270,8 +280,8 @@ export default function InterviewPage() {
       return;
     }
 
-    if (!interviewContext.topic && !isRecording) {
-      setError("Please set interview context before starting recording.");
+    if (!contextSaved) {
+      setError("Please set and save interview context before starting recording.");
       setShowContextForm(true);
       return;
     }
@@ -295,7 +305,7 @@ export default function InterviewPage() {
         recognitionRef.current?.start();
         setIsRecording(true);
         setError("");
-        addToDetectionLog(`🎤 Recording started for ${interviewContext.topic} interview`);
+        addToDetectionLog(`🎤 Recording started for ${interviewContext.topic} interview (${interviewContext.experienceLevel} level)`);
         
         if (!sessionStartTime) {
           setSessionStartTime(new Date());
@@ -465,7 +475,7 @@ export default function InterviewPage() {
               </span>
             </Link>
             <div className="flex items-center space-x-4">
-              {sessionStartTime && (
+              {sessionStartTime && contextSaved && (
                 <Badge variant="secondary" className="text-sm">
                   {interviewContext.topic} • {questionAnswers.length} Questions
                 </Badge>
@@ -501,7 +511,7 @@ export default function InterviewPage() {
           <TabsContent value="live">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-1 space-y-6">
-                {/* Interview Context Configuration */}
+                {/* Interview Context Configuration - Save ONCE for entire interview */}
                 <Card className="border-2 border-purple-200 dark:border-purple-800">
                   <CardHeader>
                     <div className="flex items-center justify-between">
@@ -509,18 +519,15 @@ export default function InterviewPage() {
                         <Briefcase className="w-5 h-5 text-purple-600 dark:text-purple-400" />
                         <CardTitle>Interview Context</CardTitle>
                       </div>
-                      {!showContextForm && interviewContext.topic && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setShowContextForm(!showContextForm)}
-                        >
-                          Edit
-                        </Button>
+                      {contextSaved && (
+                        <Badge variant="secondary" className="bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-400">
+                          <Check className="w-3 h-3 mr-1" />
+                          Saved
+                        </Badge>
                       )}
                     </div>
                     <CardDescription>
-                      Set topic & experience level for accurate AI answers
+                      Set once for the entire interview session
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
@@ -535,7 +542,7 @@ export default function InterviewPage() {
                             onChange={(e) => setInterviewContext(prev => ({ ...prev, topic: e.target.value }))}
                           />
                           <p className="text-xs text-slate-500">
-                            This helps AI understand domain-specific terms (e.g., "Time Travel" in Snowflake vs general concept)
+                            Domain-specific context (e.g., "Time Travel" in Snowflake vs general concept)
                           </p>
                         </div>
 
@@ -573,7 +580,7 @@ export default function InterviewPage() {
                           <Label htmlFor="additional">Additional Context (Optional)</Label>
                           <Textarea
                             id="additional"
-                            placeholder="Any specific focus areas or requirements..."
+                            placeholder="Any specific focus areas..."
                             value={interviewContext.additionalContext}
                             onChange={(e) => setInterviewContext(prev => ({ ...prev, additionalContext: e.target.value }))}
                             rows={2}
@@ -585,7 +592,7 @@ export default function InterviewPage() {
                           className="w-full bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-700 hover:to-pink-600"
                         >
                           <Check className="w-4 h-4 mr-2" />
-                          Save Context
+                          Save Context for Interview
                         </Button>
 
                         {presets.length > 0 && (
@@ -622,9 +629,17 @@ export default function InterviewPage() {
                             Role: {interviewContext.role}
                           </div>
                         )}
-                        <div className="pt-2 text-xs text-slate-500">
-                          AI will generate {interviewContext.topic}-specific answers appropriate for {interviewContext.experienceLevel} level
+                        <div className="pt-2 text-xs text-green-600 dark:text-green-400 font-medium">
+                          ✓ Context saved for entire interview
                         </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setShowContextForm(true)}
+                          className="w-full"
+                        >
+                          Edit Context
+                        </Button>
                       </div>
                     )}
                   </CardContent>
@@ -640,7 +655,7 @@ export default function InterviewPage() {
                       onClick={toggleRecording}
                       className={`w-full ${isRecording ? "bg-red-600 hover:bg-red-700" : "bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-700 hover:to-cyan-600"}`}
                       size="lg"
-                      disabled={!interviewContext.topic}
+                      disabled={!contextSaved}
                     >
                       {isRecording ? (
                         <>
@@ -793,7 +808,7 @@ export default function InterviewPage() {
                       </div>
                     ) : (
                       <p className="text-slate-500 dark:text-slate-400 italic">
-                        {isRecording ? "Listening for questions..." : "Set context and start recording to detect questions"}
+                        {isRecording ? "Listening for questions..." : contextSaved ? "Start recording to detect questions" : "Set and save context first"}
                       </p>
                     )}
                   </CardContent>
@@ -806,9 +821,9 @@ export default function InterviewPage() {
                         <Zap className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
                         <CardTitle>AI-Generated Answer</CardTitle>
                       </div>
-                      {currentQuestion && (
+                      {currentQuestion && contextSaved && (
                         <Button
-                          onClick={() => handleGenerateAIAnswer(currentQuestion, generateAISuggestion(currentQuestion))}
+                          onClick={() => handleGenerateAIAnswer(currentQuestion, generateAISuggestion(currentQuestion), false)}
                           size="sm"
                           disabled={isGeneratingAnswer}
                         >
@@ -824,9 +839,9 @@ export default function InterviewPage() {
                       )}
                     </div>
                     <CardDescription>
-                      {interviewContext.topic 
+                      {contextSaved 
                         ? `Tailored for ${interviewContext.topic} • ${interviewContext.experienceLevel} level`
-                        : "Set interview context to get personalized answers"
+                        : "Save interview context to get personalized answers"
                       }
                     </CardDescription>
                   </CardHeader>
@@ -834,6 +849,7 @@ export default function InterviewPage() {
                     {isGeneratingAnswer ? (
                       <div className="flex items-center justify-center py-8">
                         <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
+                        <span className="ml-3 text-slate-600">Generating context-aware answer...</span>
                       </div>
                     ) : currentQA?.aiAnswer ? (
                       <div className="space-y-4">
@@ -853,9 +869,9 @@ export default function InterviewPage() {
                     ) : (
                       <div className="text-center py-8">
                         <p className="text-slate-500 dark:text-slate-400 italic mb-4">
-                          {!interviewContext.topic 
-                            ? "Set interview context above to get started"
-                            : "AI answers will appear here when questions are detected"
+                          {!contextSaved 
+                            ? "Save interview context above to get started"
+                            : "AI answers will appear automatically when questions are detected"
                           }
                         </p>
                         {!getConfiguredProvider() && (
