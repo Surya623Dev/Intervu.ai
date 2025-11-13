@@ -48,6 +48,15 @@ export default function InterviewPage() {
   const [contextSaved, setContextSaved] = useState(false);
   const [showContextForm, setShowContextForm] = useState(true);
   
+  // NEW: Question accumulation state for long questions
+  const [accumulatedText, setAccumulatedText] = useState<string>("");
+  const questionDetectionTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSpeechTimeRef = useRef<number>(Date.now());
+  const [isAccumulatingQuestion, setIsAccumulatingQuestion] = useState<boolean>(false);
+  
+  // CRITICAL: Use ref to persist accumulated text across recognition restarts
+  const accumulatedTextRef = useRef<string>("");
+  
   const recognitionRef = useRef<any>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const processedQuestionsRef = useRef<Set<string>>(new Set());
@@ -110,44 +119,95 @@ export default function InterviewPage() {
 
           if (finalTranscript) {
             const newText = finalTranscript.trim();
-            setTranscript(prev => prev + finalTranscript);
             
-            addToDetectionLog(`Heard: "${newText}"`);
+            // Only add to main transcript if it's not empty
+            if (newText) {
+              setTranscript(prev => prev + " " + newText);
             
-            const isQuestion = detectQuestion(newText);
-            
-            if (isQuestion) {
-              const question = newText;
-              addToDetectionLog(`✅ QUESTION DETECTED: "${question}"`);
+              // Update last speech time
+              lastSpeechTimeRef.current = Date.now();
               
-              // Check if we've already processed this question
-              if (!processedQuestionsRef.current.has(question)) {
-                processedQuestionsRef.current.add(question);
-                setCurrentQuestion(question);
-                
-                // Generate suggestion
-                const newSuggestion = generateAISuggestion(question);
-                
-                // IMMEDIATELY generate AI answer automatically
-                addToDetectionLog(`🤖 Auto-generating AI answer...`);
-                handleGenerateAIAnswer(question, newSuggestion, true);
-              } else {
-                addToDetectionLog(`⚠️ Question already processed, skipping`);
+              // Show that we're accumulating a question
+              setIsAccumulatingQuestion(true);
+              
+              // CRITICAL: Accumulate in ref first (persists across restarts)
+              accumulatedTextRef.current = (accumulatedTextRef.current + " " + newText).trim();
+              
+              // Then sync to state for display
+              setAccumulatedText(accumulatedTextRef.current);
+              
+              addToDetectionLog(`Heard: "${newText}" (accumulated: ${accumulatedTextRef.current.length} chars)`);
+              
+              // Clear any existing question detection timer
+              if (questionDetectionTimerRef.current) {
+                clearTimeout(questionDetectionTimerRef.current);
               }
-            } else {
-              addToDetectionLog(`ℹ️ Not a question`);
+              
+              // Set new timer - wait 7 seconds of silence before processing
+              // This handles very long questions that span multiple recognition restarts
+              questionDetectionTimerRef.current = setTimeout(() => {
+                setIsAccumulatingQuestion(false);
+                
+                // Get accumulated text from ref (source of truth)
+                const fullQuestion = accumulatedTextRef.current;
+                
+                if (!fullQuestion || fullQuestion.length < 10) {
+                  // Too short to be a real question
+                  addToDetectionLog(`ℹ️ Text too short: "${fullQuestion}"`);
+                  accumulatedTextRef.current = "";
+                  setAccumulatedText("");
+                  return;
+                }
+                
+                const isQuestion = detectQuestion(fullQuestion);
+                
+                if (isQuestion) {
+                  addToDetectionLog(`✅ COMPLETE QUESTION (${fullQuestion.length} chars): "${fullQuestion.substring(0, 100)}..."`);
+                  
+                  // Check if we've already processed this question
+                  if (!processedQuestionsRef.current.has(fullQuestion)) {
+                    processedQuestionsRef.current.add(fullQuestion);
+                    setCurrentQuestion(fullQuestion);
+                    
+                    // Generate suggestion
+                    const newSuggestion = generateAISuggestion(fullQuestion);
+                    
+                    // Auto-generate AI answer
+                    addToDetectionLog(`🤖 Generating AI answer...`);
+                    handleGenerateAIAnswer(fullQuestion, newSuggestion, true);
+                  } else {
+                    addToDetectionLog(`⚠️ Question already processed`);
+                  }
+                } else {
+                  addToDetectionLog(`ℹ️ Not a question: "${fullQuestion.substring(0, 50)}..."`);
+                }
+                
+                // Clear accumulated text after processing
+                accumulatedTextRef.current = "";
+                setAccumulatedText("");
+              }, 7000);
             }
           }
         };
 
         recognitionRef.current.onerror = (event: any) => {
           console.error("Speech recognition error:", event.error);
+          
+          // Handle aborted error specially - it's expected during restarts
+          if (event.error === "aborted") {
+            addToDetectionLog(`🔄 Recognition aborted (normal during long speech), restarting...`);
+            // Don't set error state for aborted - it's expected
+            return;
+          }
+          
+          // Log other errors
           addToDetectionLog(`❌ Error: ${event.error}`);
           
           if (event.error === "not-allowed") {
             setError("Microphone access denied. Please allow microphone access in your browser settings.");
           } else if (event.error === "no-speech") {
-            addToDetectionLog(`⚠️ No speech detected (timeout)`);
+            // This is normal - just means silence detected
+            addToDetectionLog(`⏸️ Silence detected, will restart...`);
           } else if (event.error === "network") {
             setError("Network error. Please check your connection.");
           }
@@ -155,12 +215,21 @@ export default function InterviewPage() {
 
         recognitionRef.current.onend = () => {
           if (isRecording) {
-            try {
-              recognitionRef.current?.start();
-              addToDetectionLog(`🔄 Recognition restarted`);
-            } catch (err) {
-              console.error("Failed to restart recognition:", err);
-            }
+            const currentAccLength = accumulatedTextRef.current.length;
+            addToDetectionLog(`🔄 Recognition ended (accumulated: ${currentAccLength} chars), restarting...`);
+            
+            // Add a small delay before restarting to ensure clean state
+            setTimeout(() => {
+              try {
+                if (isRecording && recognitionRef.current) {
+                  recognitionRef.current.start();
+                  addToDetectionLog(`✅ Recognition restarted (preserving ${accumulatedTextRef.current.length} chars)`);
+                }
+              } catch (err) {
+                console.error("Failed to restart recognition:", err);
+                addToDetectionLog(`⚠️ Failed to restart, will retry...`);
+              }
+            }, 100);
           }
         };
       } else {
@@ -185,6 +254,9 @@ export default function InterviewPage() {
       }
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
+      }
+      if (questionDetectionTimerRef.current) {
+        clearTimeout(questionDetectionTimerRef.current);
       }
     };
   }, [isRecording]);
@@ -293,6 +365,11 @@ export default function InterviewPage() {
         }
         setIsRecording(false);
         setError("");
+        setAccumulatedText(""); // Clear state
+        accumulatedTextRef.current = ""; // Clear ref
+        if (questionDetectionTimerRef.current) {
+          clearTimeout(questionDetectionTimerRef.current);
+        }
         addToDetectionLog(`🛑 Recording stopped`);
         
         if (animationFrameRef.current) {
@@ -304,6 +381,13 @@ export default function InterviewPage() {
       }
     } else {
       try {
+        // Clear accumulated text before starting
+        setAccumulatedText("");
+        accumulatedTextRef.current = ""; // Clear ref
+        if (questionDetectionTimerRef.current) {
+          clearTimeout(questionDetectionTimerRef.current);
+        }
+        
         // Ensure recognition is fully stopped before starting
         if (recognitionRef.current) {
           try {
@@ -318,6 +402,7 @@ export default function InterviewPage() {
               recognitionRef.current?.start();
               setIsRecording(true);
               setError("");
+              lastSpeechTimeRef.current = Date.now();
               addToDetectionLog(`🎤 Recording started for ${interviewContext.topic} interview (${interviewContext.experienceLevel} level)`);
               
               if (!sessionStartTime) {
@@ -754,6 +839,18 @@ export default function InterviewPage() {
                             <span className="text-sm font-medium">Recording Active</span>
                           </div>
                         </div>
+                        
+                        {isAccumulatingQuestion && accumulatedText && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-center space-x-2 text-purple-600 dark:text-purple-400 py-2">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span className="text-sm font-medium">Capturing question...</span>
+                            </div>
+                            <div className="text-xs text-center text-slate-500">
+                              {accumulatedText.length} characters accumulated
+                            </div>
+                          </div>
+                        )}
                         
                         {audioLevel > 0 && (
                           <div className="space-y-1">
